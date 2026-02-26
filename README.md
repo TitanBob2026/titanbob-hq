@@ -89,6 +89,14 @@ npm run setup    # interactive wizard — configures .env
 npm run prod     # builds and starts the server
 ```
 
+### Updating
+
+```bash
+npm run update -- --yes
+```
+
+Fetches the latest release, rebuilds, restarts, and verifies health. Auto-rolls back on failure. See [docs/UPDATING.md](docs/UPDATING.md) for flags and details.
+
 ### Development
 
 ```bash
