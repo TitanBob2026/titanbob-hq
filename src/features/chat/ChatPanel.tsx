@@ -209,7 +209,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   };
 
   const toggleMemory = (key: string) => {
-    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
+    setCollapsed(prev => ({ ...prev, [key]: !(prev[key] ?? true) }));
   };
 
   // First message time for mission time calculation
@@ -303,6 +303,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
                 index={i}
                 isCollapsed={isCollapsed}
                 isMemoryCollapsed={isMemoryCollapsed}
+                memoryKey={memoryKey}
                 onToggleCollapse={toggleCollapse}
                 onToggleMemory={toggleMemory}
                 firstMessageTime={firstMessageTime}
