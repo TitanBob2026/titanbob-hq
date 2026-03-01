@@ -21,7 +21,7 @@ interface KanbanBoardProps {
 /* ── Loading skeleton ── */
 function SkeletonColumn() {
   return (
-    <div className="flex flex-col min-w-[280px] w-[320px] max-w-[360px] shrink-0 bg-background/50 rounded-lg border border-border/40">
+    <div className="flex flex-col min-w-[280px] w-[320px] max-w-[360px] h-full shrink-0 bg-background/50 rounded-lg border border-border/40">
       <div className="h-10 px-3 flex items-center border-b border-border/40">
         <div className="h-3 w-16 bg-muted rounded animate-pulse" />
       </div>
@@ -140,7 +140,7 @@ export const KanbanBoard = memo(function KanbanBoard({
   /* ── Loading skeleton ── */
   if (loading) {
     return (
-      <div className="flex-1 overflow-x-auto">
+      <div className="h-full overflow-x-auto">
         <div className="flex gap-3 p-0 min-w-min h-full">
           {COLUMNS.map(s => <SkeletonColumn key={s} />)}
         </div>
@@ -179,7 +179,7 @@ export const KanbanBoard = memo(function KanbanBoard({
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      <div className="flex-1 overflow-x-auto">
+      <div className="h-full overflow-x-auto">
         <div className="flex gap-3 p-0 min-w-min h-full">
           {COLUMNS.map(status => (
             <KanbanColumn

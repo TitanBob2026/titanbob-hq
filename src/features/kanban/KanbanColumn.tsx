@@ -39,7 +39,7 @@ export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardCl
 
   return (
     <div
-      className={`flex flex-col min-w-[280px] w-[320px] max-w-[360px] shrink-0 bg-background/50 rounded-lg border transition-colors duration-150 ${
+      className={`flex flex-col min-w-[280px] w-[320px] max-w-[360px] h-full shrink-0 bg-background/50 rounded-lg border transition-colors duration-150 ${
         isOverColumn ? 'border-primary/50 bg-primary/5' : 'border-border/40'
       }`}
     >

@@ -108,7 +108,7 @@ export function KanbanPanel({ initialTaskId, onInitialTaskConsumed }: KanbanPane
       />
 
       {/* Board body */}
-      <div className="flex-1 overflow-hidden px-4 pb-4">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden px-4 pb-4">
         <KanbanBoard
           tasksByStatus={tasksByStatus}
           onCardClick={handleCardClick}
