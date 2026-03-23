@@ -7,6 +7,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import http from 'node:http';
+import { parse as parseDotenv } from 'dotenv';
 import type { HealthResult } from './types.js';
 
 const BACKOFFS = [2_000, 4_000, 8_000];
@@ -96,15 +97,7 @@ function readEnvValue(cwd: string, key: string): string | undefined {
   if (!existsSync(envPath)) return undefined;
 
   const content = readFileSync(envPath, 'utf-8');
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const match = new RegExp(`^${key}=(.*)$`).exec(trimmed);
-    if (match) return match[1].trim();
-  }
-
-  return undefined;
+  return parseDotenv(content)[key];
 }
 
 function resolveProbeHost(host: string): string {

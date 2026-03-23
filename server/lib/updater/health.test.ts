@@ -111,6 +111,38 @@ describe('updater health checks', () => {
     );
   });
 
+  it('strips quotes from the configured port before probing health', async () => {
+    const cwd = createProjectEnv(['HOST=127.0.0.1', 'PORT="4311"']);
+    mockHealthyVersion('1.2.3');
+
+    const { checkHealth } = await import('./health.js');
+    const result = await checkHealth(cwd, '1.2.3');
+
+    expect(result).toMatchObject({ healthy: true, versionMatch: true, reportedVersion: '1.2.3' });
+    expect(httpGetMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4311/health',
+      expect.objectContaining({ timeout: 5000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('strips quotes from the configured host before probing health', async () => {
+    const cwd = createProjectEnv(['HOST="0.0.0.0"', 'PORT=4311']);
+    mockHealthyVersion('1.2.3');
+
+    const { checkHealth } = await import('./health.js');
+    const result = await checkHealth(cwd, '1.2.3');
+
+    expect(result).toMatchObject({ healthy: true, versionMatch: true, reportedVersion: '1.2.3' });
+    expect(httpGetMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4311/health',
+      expect.objectContaining({ timeout: 5000 }),
+      expect.any(Function),
+    );
+  });
+
   it('uses a specific configured LAN or tailnet host for health probes', async () => {
     const cwd = createProjectEnv(['HOST=100.92.14.6', 'PORT=4312']);
     mockHealthyVersion('1.2.3');
