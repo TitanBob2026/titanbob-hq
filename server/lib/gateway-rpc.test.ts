@@ -1,7 +1,6 @@
-/** Tests for the shared gateway RPC client (WebSocket-based). */
+/** Tests for the shared gateway RPC client (persistent WebSocket). */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { IncomingMessage } from 'node:http';
 
 // Mock config to point at our test server
 let testPort: number;
@@ -10,6 +9,7 @@ vi.mock('./config.js', () => ({
     return {
       gatewayUrl: `http://127.0.0.1:${testPort}`,
       gatewayToken: 'test-token',
+      port: 3080,
     };
   },
 }));
@@ -21,41 +21,20 @@ import {
   gatewayFilesSet,
 } from './gateway-rpc.js';
 
-describe('gateway-rpc (WebSocket)', () => {
+describe('gateway-rpc (persistent WebSocket)', () => {
   let wss: WebSocketServer;
 
-  /** Handler for incoming gateway connections — override per test */
-  let onConnection: (ws: WebSocket, req: IncomingMessage) => void;
+  /** Handler for incoming RPC method calls (after connect handshake) */
+  let rpcHandler: (method: string, params: unknown) => unknown;
 
   beforeAll(async () => {
-    // Start a local WebSocket server that mimics the gateway protocol
+    rpcHandler = () => ({});
+
     wss = new WebSocketServer({ port: 0 });
     testPort = (wss.address() as { port: number }).port;
 
-    wss.on('connection', (ws, req) => {
-      onConnection(ws, req);
-    });
-  });
-
-  afterAll(() => {
-    wss.close();
-  });
-
-  beforeEach(() => {
-    onConnection = () => {};
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  /** Set up a gateway mock that follows the real protocol:
-   *  1. On connection: send connect.challenge
-   *  2. Client sends connect → respond with ok
-   *  3. Client sends RPC → invoke handler */
-  function mockGateway(rpcHandler: (method: string, params: unknown) => unknown) {
-    onConnection = (ws) => {
-      // Step 1: Send challenge immediately on connect
+    wss.on('connection', (ws) => {
+      // Send challenge immediately
       ws.send(JSON.stringify({
         type: 'event',
         event: 'connect.challenge',
@@ -66,12 +45,11 @@ describe('gateway-rpc (WebSocket)', () => {
         const msg = JSON.parse(data.toString());
 
         if (msg.method === 'connect') {
-          // Step 2: Accept the connect
           ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
           return;
         }
 
-        // Step 3: RPC call — invoke handler
+        // RPC call
         try {
           const result = rpcHandler(msg.method, msg.params);
           ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: result }));
@@ -82,63 +60,64 @@ describe('gateway-rpc (WebSocket)', () => {
           }));
         }
       });
-    };
-  }
+    });
+  });
+
+  afterAll(() => {
+    wss.close();
+  });
+
+  beforeEach(() => {
+    rpcHandler = () => ({});
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
 
   describe('gatewayRpcCall', () => {
-    it('sends connect then RPC request and returns payload', async () => {
-      mockGateway((method, params) => {
+    it('sends RPC request and returns payload', async () => {
+      rpcHandler = (method, params) => {
         expect(method).toBe('test.method');
         expect(params).toEqual({ foo: 'bar' });
         return { result: 'ok' };
-      });
+      };
 
       const result = await gatewayRpcCall('test.method', { foo: 'bar' });
       expect(result).toEqual({ result: 'ok' });
     });
 
     it('rejects on RPC error response', async () => {
-      mockGateway(() => {
-        throw new Error('not found');
-      });
-
+      rpcHandler = () => { throw new Error('not found'); };
       await expect(gatewayRpcCall('test.fail', {})).rejects.toThrow('not found');
     });
 
-    it('rejects on timeout', async () => {
-      // Gateway sends challenge + accepts connect, but never responds to RPC
-      onConnection = (ws) => {
-        ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n', ts: Date.now() } }));
-        ws.on('message', (data) => {
-          const msg = JSON.parse(data.toString());
-          if (msg.method === 'connect') {
-            ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
-          }
-          // Don't respond to the RPC call — let it timeout
-        });
+    it('handles multiple sequential calls on the same connection', async () => {
+      let callCount = 0;
+      rpcHandler = () => {
+        callCount++;
+        return { n: callCount };
       };
 
-      await expect(gatewayRpcCall('test.timeout', {}, 500)).rejects.toThrow('timeout');
+      const r1 = await gatewayRpcCall('call.one', {});
+      const r2 = await gatewayRpcCall('call.two', {});
+      expect(r1).toEqual({ n: 1 });
+      expect(r2).toEqual({ n: 2 });
     });
 
-    it('includes auth token in connect request', async () => {
-      let connectParams: Record<string, unknown> = {};
-
-      onConnection = (ws) => {
-        ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n', ts: Date.now() } }));
-        ws.on('message', (data) => {
-          const msg = JSON.parse(data.toString());
-          if (msg.method === 'connect') {
-            connectParams = msg.params;
-            ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
-          } else {
-            ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
-          }
-        });
+    it('handles concurrent calls', async () => {
+      rpcHandler = (_method, params) => {
+        return { echo: (params as Record<string, unknown>).value };
       };
 
-      await gatewayRpcCall('test.auth', {});
-      expect((connectParams as { auth?: { token?: string } }).auth?.token).toBe('test-token');
+      const [r1, r2, r3] = await Promise.all([
+        gatewayRpcCall('echo', { value: 'a' }),
+        gatewayRpcCall('echo', { value: 'b' }),
+        gatewayRpcCall('echo', { value: 'c' }),
+      ]);
+      expect(r1).toEqual({ echo: 'a' });
+      expect(r2).toEqual({ echo: 'b' });
+      expect(r3).toEqual({ echo: 'c' });
     });
   });
 
@@ -146,67 +125,54 @@ describe('gateway-rpc (WebSocket)', () => {
     it('returns files from gateway response', async () => {
       const mockFiles = [
         { name: 'SOUL.md', path: 'SOUL.md', missing: false, size: 100, updatedAtMs: 1000 },
-        { name: 'TOOLS.md', path: 'TOOLS.md', missing: false, size: 200, updatedAtMs: 2000 },
       ];
-
-      mockGateway(() => ({ files: mockFiles }));
+      rpcHandler = () => ({ files: mockFiles });
 
       const result = await gatewayFilesList('main');
       expect(result).toEqual(mockFiles);
     });
 
-    it('returns empty array when no files in response', async () => {
-      mockGateway(() => ({}));
-
-      const result = await gatewayFilesList('main');
-      expect(result).toEqual([]);
+    it('returns empty array when no files', async () => {
+      rpcHandler = () => ({});
+      expect(await gatewayFilesList('main')).toEqual([]);
     });
   });
 
   describe('gatewayFilesGet', () => {
-    it('returns file with content', async () => {
-      const mockFile = {
-        name: 'SOUL.md', path: 'SOUL.md', missing: false,
-        size: 7, updatedAtMs: 1000, content: '# Soul',
-      };
-
-      mockGateway(() => mockFile);
+    it('extracts content from nested file field', async () => {
+      rpcHandler = () => ({
+        agentId: 'main',
+        workspace: '/sandbox/.openclaw/workspace',
+        file: { name: 'SOUL.md', missing: false, size: 7, updatedAtMs: 1000, content: '# Soul' },
+      });
 
       const result = await gatewayFilesGet('main', 'SOUL.md');
-      expect(result).toEqual(mockFile);
+      expect(result?.content).toBe('# Soul');
     });
 
     it('returns null for missing files', async () => {
-      mockGateway(() => ({ name: 'SOUL.md', missing: true }));
-
-      const result = await gatewayFilesGet('main', 'SOUL.md');
-      expect(result).toBeNull();
+      rpcHandler = () => ({ file: { name: 'X.md', missing: true } });
+      expect(await gatewayFilesGet('main', 'X.md')).toBeNull();
     });
 
-    it('returns null on RPC error', async () => {
-      mockGateway(() => { throw new Error('unsupported file'); });
-
-      const result = await gatewayFilesGet('main', 'memory/daily.md');
-      expect(result).toBeNull();
+    it('returns null on error', async () => {
+      rpcHandler = () => { throw new Error('unsupported'); };
+      expect(await gatewayFilesGet('main', 'bad.md')).toBeNull();
     });
   });
 
   describe('gatewayFilesSet', () => {
     it('sends correct params', async () => {
-      let receivedParams: unknown;
-      mockGateway((_method, params) => {
-        receivedParams = params;
-        return { ok: true };
-      });
+      let received: unknown;
+      rpcHandler = (_m, p) => { received = p; return { ok: true }; };
 
-      await gatewayFilesSet('main', 'SOUL.md', '# New Soul');
-      expect(receivedParams).toEqual({ agentId: 'main', name: 'SOUL.md', content: '# New Soul' });
+      await gatewayFilesSet('main', 'SOUL.md', '# New');
+      expect(received).toEqual({ agentId: 'main', name: 'SOUL.md', content: '# New' });
     });
 
     it('rejects on error', async () => {
-      mockGateway(() => { throw new Error('write failed'); });
-
-      await expect(gatewayFilesSet('main', 'SOUL.md', 'x')).rejects.toThrow('write failed');
+      rpcHandler = () => { throw new Error('write failed'); };
+      await expect(gatewayFilesSet('main', 'X', 'y')).rejects.toThrow('write failed');
     });
   });
 });

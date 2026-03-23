@@ -2,19 +2,18 @@
  * Shared gateway RPC client.
  *
  * Makes direct WebSocket RPC calls to the OpenClaw gateway for workspace
- * file access. Used as a fallback when the workspace directory is not
- * locally accessible (e.g. Nerve on DGX host, workspace in sandbox).
+ * file access. Uses a single persistent connection that multiplexes all
+ * RPC calls, avoiding the overhead and session conflicts of per-request
+ * connections.
  *
- * Uses Nerve's existing gateway connection config (GATEWAY_URL + token)
- * rather than shelling out to the `openclaw` CLI which requires its own
- * separate configuration.
+ * Used as a fallback when the workspace directory is not locally accessible
+ * (e.g. Nerve on DGX host, workspace in OpenShell sandbox).
  * @module
  */
 
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { config } from './config.js';
-import { DEFAULT_GATEWAY_WS } from './constants.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -30,9 +29,10 @@ export interface GatewayFileWithContent extends GatewayFileEntry {
   content: string;
 }
 
-// ── Core RPC call ────────────────────────────────────────────────────
+// ── Persistent connection ────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const RECONNECT_DELAY_MS = 3_000;
 
 /** Derive the WebSocket URL from the HTTP gateway URL. */
 function getGatewayWsUrl(): string {
@@ -43,19 +43,144 @@ function getGatewayWsUrl(): string {
   } else {
     wsUrl = httpUrl.replace(/^http/, 'ws');
   }
-  // Ensure the /ws path is present (gateway WebSocket endpoint)
   if (!wsUrl.endsWith('/ws')) {
     wsUrl = wsUrl.replace(/\/$/, '') + '/ws';
   }
   return wsUrl;
 }
 
+interface PendingCall {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+let ws: WebSocket | null = null;
+let connected = false;
+let connecting = false;
+const pending = new Map<string, PendingCall>();
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Send a raw message, ensuring the connection is ready. */
+function wsSend(data: string): boolean {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(data);
+    return true;
+  }
+  return false;
+}
+
+/** Clean up all pending calls with an error. */
+function rejectAllPending(reason: string): void {
+  for (const [id, call] of pending) {
+    clearTimeout(call.timer);
+    call.reject(new Error(reason));
+    pending.delete(id);
+  }
+}
+
+/** Establish the persistent gateway connection. */
+function ensureConnection(): void {
+  if (ws || connecting) return;
+  if (!config.gatewayToken) return; // No token = can't connect
+
+  connecting = true;
+  const wsUrl = getGatewayWsUrl();
+
+  const socket = new WebSocket(wsUrl, {
+    headers: { Origin: `http://127.0.0.1:${config.port}` },
+  });
+
+  socket.on('open', () => {
+    // Wait for connect.challenge
+  });
+
+  socket.on('message', (data: Buffer | string) => {
+    try {
+      const msg = JSON.parse(data.toString());
+
+      // Handle connect.challenge → send connect
+      if (msg.type === 'event' && msg.event === 'connect.challenge') {
+        socket.send(JSON.stringify({
+          type: 'req',
+          id: '__connect__',
+          method: 'connect',
+          params: {
+            minProtocol: 3,
+            maxProtocol: 3,
+            client: {
+              id: 'openclaw-control-ui',
+              version: '0.1.0',
+              platform: 'web',
+              mode: 'webchat',
+              instanceId: `nerve-rpc-${randomUUID().slice(0, 8)}`,
+            },
+            role: 'operator',
+            scopes: ['operator.admin', 'operator.read', 'operator.write'],
+            auth: { token: config.gatewayToken },
+          },
+        }));
+        return;
+      }
+
+      // Handle connect response
+      if (msg.type === 'res' && msg.id === '__connect__') {
+        connecting = false;
+        if (msg.ok) {
+          ws = socket;
+          connected = true;
+          console.log('[gateway-rpc] Connected to gateway (persistent)');
+        } else {
+          console.error('[gateway-rpc] Gateway connect rejected:', msg.error?.message);
+          socket.close();
+        }
+        return;
+      }
+
+      // Handle RPC responses
+      if (msg.type === 'res' && pending.has(msg.id)) {
+        const call = pending.get(msg.id)!;
+        pending.delete(msg.id);
+        clearTimeout(call.timer);
+        if (msg.ok === false) {
+          call.reject(new Error(msg.error?.message || 'RPC error'));
+        } else {
+          call.resolve(msg.payload ?? msg.result ?? msg);
+        }
+        return;
+      }
+
+      // Ignore other events (chat messages, etc.)
+    } catch {
+      // Ignore parse errors
+    }
+  });
+
+  socket.on('error', (err) => {
+    console.warn('[gateway-rpc] WebSocket error:', err.message);
+  });
+
+  socket.on('close', () => {
+    const wasConnected = connected;
+    ws = null;
+    connected = false;
+    connecting = false;
+    rejectAllPending('Gateway connection closed');
+
+    // Auto-reconnect after a delay (only if we had a working connection)
+    if (wasConnected && !reconnectTimer) {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        ensureConnection();
+      }, RECONNECT_DELAY_MS);
+    }
+  });
+}
+
+// ── Core RPC call ────────────────────────────────────────────────────
+
 /**
- * Execute a gateway RPC call via direct WebSocket connection.
- *
- * Opens a temporary WebSocket to the gateway, authenticates with the
- * gateway token, sends the RPC request, waits for the response, and
- * closes the connection.
+ * Execute a gateway RPC call via the persistent WebSocket connection.
  */
 export function gatewayRpcCall(
   method: string,
@@ -63,122 +188,54 @@ export function gatewayRpcCall(
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const wsUrl = getGatewayWsUrl();
-    const token = config.gatewayToken;
+    // Ensure connection exists
+    ensureConnection();
+
     const reqId = randomUUID();
-    let settled = false;
-    let ws: WebSocket;
 
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        ws?.close();
-        reject(new Error(`Gateway RPC timeout after ${timeoutMs}ms calling ${method}`));
-      }
+      pending.delete(reqId);
+      reject(new Error(`Gateway RPC timeout after ${timeoutMs}ms calling ${method}`));
     }, timeoutMs);
 
-    const cleanup = () => {
-      clearTimeout(timer);
-      if (ws?.readyState === WebSocket.OPEN) ws.close();
-    };
+    pending.set(reqId, { resolve, reject, timer });
 
-    try {
-      ws = new WebSocket(wsUrl, {
-        headers: { Origin: `http://127.0.0.1:${config.port}` },
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      reject(new Error(`Failed to connect to gateway at ${wsUrl}: ${(err as Error).message}`));
+    // If already connected, send immediately
+    if (connected) {
+      const sent = wsSend(JSON.stringify({ type: 'req', id: reqId, method, params }));
+      if (!sent) {
+        pending.delete(reqId);
+        clearTimeout(timer);
+        reject(new Error('Gateway connection not ready'));
+      }
       return;
     }
 
-    let connectReqId: string | null = null;
-
-    ws.on('open', () => {
-      // Wait for connect.challenge before sending connect (gateway protocol)
-    });
-
-    ws.on('message', (data: Buffer | string) => {
-      if (settled) return;
-
-      try {
-        const msg = JSON.parse(data.toString());
-
-        // Step 1: Gateway sends connect.challenge — respond with connect
-        if (msg.type === 'event' && msg.event === 'connect.challenge') {
-          connectReqId = randomUUID();
-          const connectMsg = {
-            type: 'req',
-            id: connectReqId,
-            method: 'connect',
-            params: {
-              minProtocol: 3,
-              maxProtocol: 3,
-              client: {
-                id: 'openclaw-control-ui',
-                version: '0.1.0',
-                platform: 'web',
-                mode: 'webchat',
-                instanceId: randomUUID(),
-              },
-              role: 'operator',
-              scopes: ['operator.admin', 'operator.read', 'operator.write'],
-              ...(token ? { auth: { token } } : {}),
-            },
-          };
-          ws.send(JSON.stringify(connectMsg));
-          return;
-        }
-
-        // Step 2: Connect response — send the actual RPC request
-        if (msg.type === 'res' && connectReqId && msg.id === connectReqId) {
-          connectReqId = null;
-          if (!msg.ok) {
-            settled = true;
-            cleanup();
-            reject(new Error(`Gateway connect failed: ${msg.error?.message || JSON.stringify(msg.error)}`));
-            return;
+    // Not yet connected — wait for connection, then send
+    // The message will be sent once the connection completes
+    const checkInterval = setInterval(() => {
+      if (connected) {
+        clearInterval(checkInterval);
+        if (pending.has(reqId)) {
+          const sent = wsSend(JSON.stringify({ type: 'req', id: reqId, method, params }));
+          if (!sent) {
+            pending.delete(reqId);
+            clearTimeout(timer);
+            reject(new Error('Gateway connection lost during wait'));
           }
-          // Connected — send the RPC request
-          ws.send(JSON.stringify({
-            type: 'req',
-            id: reqId,
-            method,
-            params,
-          }));
-          return;
         }
-
-        // Step 3: RPC response
-        if (msg.type === 'res' && msg.id === reqId) {
-          settled = true;
-          cleanup();
-          if (msg.ok === false) {
-            reject(new Error(msg.error?.message || `RPC error calling ${method}`));
-          } else {
-            resolve(msg.payload ?? msg.result ?? msg);
-          }
-          return;
-        }
-      } catch {
-        // Ignore parse errors on other messages
       }
-    });
+    }, 50);
 
-    ws.on('error', (err) => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        reject(new Error(`Gateway WebSocket error: ${err.message}`));
-      }
-    });
-
-    ws.on('close', (code, reason) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`Gateway connection closed (${code}): ${reason?.toString() || 'no reason'}`));
-      }
+    // Clean up interval on timeout
+    const origTimer = timer;
+    pending.set(reqId, {
+      resolve,
+      reject: (err) => {
+        clearInterval(checkInterval);
+        reject(err);
+      },
+      timer: origTimer,
     });
   });
 }
@@ -206,7 +263,6 @@ export async function gatewayFilesGet(agentId: string, name: string): Promise<Ga
     const result = await gatewayRpcCall('agents.files.get', { agentId, name }) as {
       file?: GatewayFileWithContent;
     } & GatewayFileWithContent;
-    // Extract from nested `file` field if present, otherwise use top-level
     const file = result.file ?? result;
     if (!file || file.missing) return null;
     return file;
