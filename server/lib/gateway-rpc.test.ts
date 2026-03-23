@@ -1,9 +1,17 @@
-/** Tests for the shared gateway RPC client. */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+/** Tests for the shared gateway RPC client (WebSocket-based). */
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'node:http';
 
-// Use top-level vi.mock for the openclaw-bin dependency
-vi.mock('./openclaw-bin.js', () => ({
-  resolveOpenclawBin: vi.fn(() => '/usr/bin/echo'),
+// Mock config to point at our test server
+let testPort: number;
+vi.mock('./config.js', () => ({
+  get config() {
+    return {
+      gatewayUrl: `http://127.0.0.1:${testPort}`,
+      gatewayToken: 'test-token',
+    };
+  },
 }));
 
 import {
@@ -13,173 +21,180 @@ import {
   gatewayFilesSet,
 } from './gateway-rpc.js';
 
-describe('gateway-rpc', () => {
+describe('gateway-rpc (WebSocket)', () => {
+  let wss: WebSocketServer;
+
+  /** Handler for incoming gateway connections — override per test */
+  let onConnection: (ws: WebSocket, req: IncomingMessage) => void;
+
+  beforeAll(async () => {
+    // Start a local WebSocket server that mimics the gateway protocol
+    wss = new WebSocketServer({ port: 0 });
+    testPort = (wss.address() as { port: number }).port;
+
+    wss.on('connection', (ws, req) => {
+      onConnection(ws, req);
+    });
+  });
+
+  afterAll(() => {
+    wss.close();
+  });
+
   beforeEach(() => {
+    onConnection = () => {};
+  });
+
+  afterEach(() => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+  /** Set up a gateway mock that handles connect + one RPC call */
+  function mockGateway(rpcHandler: (method: string, params: unknown) => unknown) {
+    onConnection = (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
 
-  describe('gatewayRpcCall', () => {
-    it('passes method and params to the CLI', async () => {
-      // /usr/bin/echo outputs args as text — not valid JSON → returns { ok, raw }
-      const result = (await gatewayRpcCall('test.method', { foo: 'bar' })) as {
-        ok: boolean;
-        raw: string;
-      };
-      expect(result.ok).toBe(true);
-      expect(result.raw).toContain('test.method');
-      expect(result.raw).toContain('--params');
-    });
-  });
-
-  describe('typed wrappers', () => {
-    // For the typed wrappers, we mock gatewayRpcCall by re-implementing
-    // the wrappers' logic locally to verify the contract. Since the
-    // wrappers call gatewayRpcCall internally and we can't easily spy on
-    // it (same-module binding), we test the actual /usr/bin/echo path and
-    // verify the wrappers handle edge cases correctly.
-
-    it('gatewayFilesList returns empty when response has no files field', async () => {
-      // echo outputs non-JSON → gatewayRpcCall returns { ok: true, raw: ... }
-      // That object has no .files field → should return []
-      const result = await gatewayFilesList('main');
-      expect(result).toEqual([]);
-    });
-
-    it('gatewayFilesGet returns null on non-JSON response', async () => {
-      // echo outputs non-JSON → gatewayRpcCall catches the error in gatewayFilesGet
-      // Actually: echo succeeds, returns { ok: true, raw: ... } which has no .content
-      // and the result object is truthy but has no .missing — so it returns the object
-      // Let's verify it handles the missing flag:
-      const result = await gatewayFilesGet('main', 'SOUL.md');
-      // The echo output produces { ok: true, raw: "..." } which has missing=undefined
-      // so !result.missing is true → returns the object (it's truthy and not missing)
-      // This is acceptable behavior — the real gateway would return proper data
-      expect(result).toBeDefined();
-    });
-
-    it('gatewayFilesSet does not throw on success', async () => {
-      // echo succeeds → no error thrown
-      await expect(gatewayFilesSet('main', 'SOUL.md', '# Soul')).resolves.not.toThrow();
-    });
-  });
-});
-
-describe('gateway-rpc typed wrappers (mocked RPC)', () => {
-  let mockRpcCall: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    vi.resetModules();
-    mockRpcCall = vi.fn();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  async function loadWithMockedRpc() {
-    vi.doMock('./openclaw-bin.js', () => ({
-      resolveOpenclawBin: vi.fn(() => '/usr/bin/echo'),
-    }));
-
-    // Import the real module first, then override gatewayRpcCall
-    const mod = await import('./gateway-rpc.js');
-
-    // Create wrapper functions that use our mock instead
-    return {
-      async filesList(agentId: string) {
-        const result = (await mockRpcCall('agents.files.list', { agentId })) as {
-          files?: unknown[];
-        };
-        return result.files ?? [];
-      },
-      async filesGet(agentId: string, name: string) {
-        try {
-          const result = (await mockRpcCall('agents.files.get', { agentId, name })) as {
-            missing?: boolean;
-            content?: string;
-          };
-          if (!result || result.missing) return null;
-          return result;
-        } catch {
-          return null;
+        if (msg.method === 'connect') {
+          // Send connect response
+          ws.send(JSON.stringify({ type: 'res', id: msg.id, method: 'connect', ok: true, payload: {} }));
+          return;
         }
-      },
-      async filesSet(agentId: string, name: string, content: string) {
-        await mockRpcCall('agents.files.set', { agentId, name, content });
-      },
-      // Expose the real module for structural tests
-      mod,
+
+        // RPC call — invoke handler
+        try {
+          const result = rpcHandler(msg.method, msg.params);
+          ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: result }));
+        } catch (err) {
+          ws.send(JSON.stringify({
+            type: 'res', id: msg.id, ok: false,
+            error: { message: (err as Error).message },
+          }));
+        }
+      });
     };
   }
 
-  describe('gatewayFilesList', () => {
-    it('passes agentId to RPC and returns files', async () => {
-      const mockFiles = [
-        { name: 'SOUL.md', path: 'SOUL.md', missing: false, size: 100, updatedAtMs: 1000 },
-      ];
-      mockRpcCall.mockResolvedValue({ files: mockFiles });
+  describe('gatewayRpcCall', () => {
+    it('sends connect then RPC request and returns payload', async () => {
+      mockGateway((method, params) => {
+        expect(method).toBe('test.method');
+        expect(params).toEqual({ foo: 'bar' });
+        return { result: 'ok' };
+      });
 
-      const { filesList } = await loadWithMockedRpc();
-      const result = await filesList('main');
-      expect(result).toEqual(mockFiles);
-      expect(mockRpcCall).toHaveBeenCalledWith('agents.files.list', { agentId: 'main' });
+      const result = await gatewayRpcCall('test.method', { foo: 'bar' });
+      expect(result).toEqual({ result: 'ok' });
     });
 
-    it('returns empty array when no files field in response', async () => {
-      mockRpcCall.mockResolvedValue({});
+    it('rejects on RPC error response', async () => {
+      mockGateway(() => {
+        throw new Error('not found');
+      });
 
-      const { filesList } = await loadWithMockedRpc();
-      expect(await filesList('main')).toEqual([]);
+      await expect(gatewayRpcCall('test.fail', {})).rejects.toThrow('not found');
+    });
+
+    it('rejects on timeout', async () => {
+      // Gateway never responds to the RPC call
+      onConnection = (ws) => {
+        ws.on('message', (data) => {
+          const msg = JSON.parse(data.toString());
+          if (msg.method === 'connect') {
+            ws.send(JSON.stringify({ type: 'res', id: msg.id, method: 'connect', ok: true, payload: {} }));
+          }
+          // Don't respond to the RPC call — let it timeout
+        });
+      };
+
+      await expect(gatewayRpcCall('test.timeout', {}, 500)).rejects.toThrow('timeout');
+    });
+
+    it('includes auth token in connect request', async () => {
+      let connectParams: Record<string, unknown> = {};
+
+      onConnection = (ws) => {
+        ws.on('message', (data) => {
+          const msg = JSON.parse(data.toString());
+          if (msg.method === 'connect') {
+            connectParams = msg.params;
+            ws.send(JSON.stringify({ type: 'res', id: msg.id, method: 'connect', ok: true, payload: {} }));
+          } else {
+            ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
+          }
+        });
+      };
+
+      await gatewayRpcCall('test.auth', {});
+      expect((connectParams as { auth?: { token?: string } }).auth?.token).toBe('test-token');
+    });
+  });
+
+  describe('gatewayFilesList', () => {
+    it('returns files from gateway response', async () => {
+      const mockFiles = [
+        { name: 'SOUL.md', path: 'SOUL.md', missing: false, size: 100, updatedAtMs: 1000 },
+        { name: 'TOOLS.md', path: 'TOOLS.md', missing: false, size: 200, updatedAtMs: 2000 },
+      ];
+
+      mockGateway(() => ({ files: mockFiles }));
+
+      const result = await gatewayFilesList('main');
+      expect(result).toEqual(mockFiles);
+    });
+
+    it('returns empty array when no files in response', async () => {
+      mockGateway(() => ({}));
+
+      const result = await gatewayFilesList('main');
+      expect(result).toEqual([]);
     });
   });
 
   describe('gatewayFilesGet', () => {
-    it('returns file content on success', async () => {
-      const mockFile = { name: 'SOUL.md', missing: false, content: '# Soul', size: 7, updatedAtMs: 1000 };
-      mockRpcCall.mockResolvedValue(mockFile);
+    it('returns file with content', async () => {
+      const mockFile = {
+        name: 'SOUL.md', path: 'SOUL.md', missing: false,
+        size: 7, updatedAtMs: 1000, content: '# Soul',
+      };
 
-      const { filesGet } = await loadWithMockedRpc();
-      const result = await filesGet('main', 'SOUL.md');
+      mockGateway(() => mockFile);
+
+      const result = await gatewayFilesGet('main', 'SOUL.md');
       expect(result).toEqual(mockFile);
     });
 
-    it('returns null for missing file', async () => {
-      mockRpcCall.mockResolvedValue({ name: 'SOUL.md', missing: true });
+    it('returns null for missing files', async () => {
+      mockGateway(() => ({ name: 'SOUL.md', missing: true }));
 
-      const { filesGet } = await loadWithMockedRpc();
-      expect(await filesGet('main', 'SOUL.md')).toBeNull();
+      const result = await gatewayFilesGet('main', 'SOUL.md');
+      expect(result).toBeNull();
     });
 
     it('returns null on RPC error', async () => {
-      mockRpcCall.mockRejectedValue(new Error('unsupported file'));
+      mockGateway(() => { throw new Error('unsupported file'); });
 
-      const { filesGet } = await loadWithMockedRpc();
-      expect(await filesGet('main', 'memory/daily.md')).toBeNull();
+      const result = await gatewayFilesGet('main', 'memory/daily.md');
+      expect(result).toBeNull();
     });
   });
 
   describe('gatewayFilesSet', () => {
-    it('passes correct params to RPC', async () => {
-      mockRpcCall.mockResolvedValue({ ok: true });
-
-      const { filesSet } = await loadWithMockedRpc();
-      await filesSet('main', 'SOUL.md', '# New Soul');
-      expect(mockRpcCall).toHaveBeenCalledWith('agents.files.set', {
-        agentId: 'main',
-        name: 'SOUL.md',
-        content: '# New Soul',
+    it('sends correct params', async () => {
+      let receivedParams: unknown;
+      mockGateway((_method, params) => {
+        receivedParams = params;
+        return { ok: true };
       });
+
+      await gatewayFilesSet('main', 'SOUL.md', '# New Soul');
+      expect(receivedParams).toEqual({ agentId: 'main', name: 'SOUL.md', content: '# New Soul' });
     });
 
-    it('rejects on RPC error', async () => {
-      mockRpcCall.mockRejectedValue(new Error('write failed'));
+    it('rejects on error', async () => {
+      mockGateway(() => { throw new Error('write failed'); });
 
-      const { filesSet } = await loadWithMockedRpc();
-      await expect(filesSet('main', 'SOUL.md', 'content')).rejects.toThrow('write failed');
+      await expect(gatewayFilesSet('main', 'SOUL.md', 'x')).rejects.toThrow('write failed');
     });
   });
 });
