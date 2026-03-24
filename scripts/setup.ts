@@ -39,6 +39,7 @@ import { generateSelfSignedCert } from './lib/cert-gen.js';
 import { detectGatewayConfig, getEnvGatewayToken, chooseSetupGatewayToken, restartGateway, approvePendingNerveDevice, detectNeededConfigChanges, type ConfigChange } from './lib/gateway-detect.js';
 import { applyAccessPlanToConfig, buildAccessPlan, type InstallerAccessProfile } from './lib/access-plan.js';
 import { getTailscaleState, type TailscaleState } from './lib/tailscale.js';
+import { detectAgentDisplayNameDefault } from './lib/agent-name-default.js';
 
 const PROJECT_ROOT = resolve(process.cwd());
 const ENV_PATH = resolve(PROJECT_ROOT, '.env');
@@ -434,7 +435,7 @@ async function collectInteractive(
   config.AGENT_NAME = await input({
     theme: promptTheme,
     message: 'Agent display name',
-    default: existing.AGENT_NAME || DEFAULTS.AGENT_NAME,
+    default: detectAgentDisplayNameDefault(existing.AGENT_NAME, DEFAULTS.AGENT_NAME),
   });
 
   // ── 3/5: Access Mode ──────────────────────────────────────────────
@@ -1148,7 +1149,7 @@ async function runDefaults(existing: EnvConfig, prereqs: PrereqResult): Promise<
   }
 
   if (!config.GATEWAY_URL) config.GATEWAY_URL = DEFAULTS.GATEWAY_URL;
-  if (!config.AGENT_NAME) config.AGENT_NAME = DEFAULTS.AGENT_NAME;
+  if (!config.AGENT_NAME) config.AGENT_NAME = detectAgentDisplayNameDefault(undefined, DEFAULTS.AGENT_NAME);
   if (!config.PORT) config.PORT = DEFAULTS.PORT;
   if (!config.HOST) config.HOST = DEFAULTS.HOST;
 
