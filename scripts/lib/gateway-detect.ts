@@ -240,6 +240,8 @@ interface PendingDeviceRequest {
   publicKey?: string;
 }
 
+const SAFE_DEVICE_REQUEST_ID_RE = /^[A-Za-z0-9_-]+$/;
+
 type PendingDeviceExec = (
   command: string,
   options?: Pick<ExecSyncOptions, 'timeout' | 'stdio'>,
@@ -553,6 +555,7 @@ export function approvePendingNerveDevice(deps: {
 
     const matches = pendingItems.filter((item) => {
       if (!item?.requestId || typeof item.requestId !== 'string') return false;
+      if (!SAFE_DEVICE_REQUEST_ID_RE.test(item.requestId)) return false;
       return matchesPendingDeviceRequest(item, identity);
     });
 

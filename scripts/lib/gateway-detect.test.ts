@@ -249,6 +249,38 @@ describe('gateway detection and repair', () => {
     );
   });
 
+  it('does not approve a pending request with an invalid requestId', async () => {
+    const execSyncMock = vi.fn((command: string) => {
+      if (command.includes('devices list --json')) {
+        return Buffer.from(JSON.stringify({
+          pending: [
+            {
+              requestId: 'req-nerve; rm -rf /',
+              deviceId: 'nerve-device',
+              publicKey: 'nerve-public-key',
+              displayName: 'Nerve UI',
+            },
+          ],
+        }));
+      }
+
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const { mod } = await importGatewayDetect();
+    const result = mod.approvePendingNerveDevice({
+      exec: execSyncMock,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.approved).toBe(0);
+    expect(result.message.toLowerCase()).toContain('manual');
+    expect(execSyncMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('openclaw devices approve'),
+      expect.anything(),
+    );
+  });
+
   it('does not approve any pending request when Nerve cannot be identified safely', async () => {
     const execSyncMock = vi.fn((command: string) => {
       if (command.includes('devices list --json')) {
