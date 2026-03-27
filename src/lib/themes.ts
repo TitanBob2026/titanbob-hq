@@ -14,7 +14,8 @@ export type ThemeName =
   | 'monokai'
   | 'ayu-dark'
   | 'rose-pine'
-  | 'monochrome';
+  | 'monochrome'
+  | 'titan-bob';
 
 export interface Theme {
   name: ThemeName;
@@ -676,8 +677,7 @@ export const themes: Record<ThemeName, Theme> = {
   'monochrome': {
     name: 'monochrome',
     label: 'Monochrome',
-    colors: {
-      '--color-background': '#0A0A0A',
+    colors: {      '--color-background': '#0A0A0A',
       '--color-foreground': '#C0C0C0',
       '--color-card': '#111111',
       '--color-card-foreground': '#C0C0C0',
@@ -723,6 +723,61 @@ export const themes: Record<ThemeName, Theme> = {
       '--color-chart-5': '#7090A0',
     },
   },
+
+  'titan-bob': {
+    name: 'titan-bob',
+    label: 'Titan Bob',
+    colors: {
+      // Core backgrounds — near-black with faint warm undertone
+      '--color-background': '#050101',
+      '--color-foreground': '#D4B8B8',
+      '--color-card': '#080202',
+      '--color-card-foreground': '#D4B8B8',
+      '--color-popover': '#080202',
+      '--color-popover-foreground': '#D4B8B8',
+      // Primary — muted crimson, not screaming red
+      '--color-primary': '#A01515',
+      '--color-primary-foreground': '#E8D0D0',
+      '--color-secondary': '#120404',
+      '--color-secondary-foreground': '#D4B8B8',
+      '--color-muted': '#120404',
+      '--color-muted-foreground': '#6E4848',
+      '--color-accent': '#120404',
+      '--color-accent-foreground': '#D4B8B8',
+      '--color-destructive': '#CC3333',
+      '--color-destructive-foreground': '#E8D0D0',
+      '--color-border': '#1C0808',
+      '--color-input': '#1C0808',
+      '--color-ring': '#A01515',
+      // Send button green — damped, not neon
+      '--color-green': '#3D8B4A',
+      '--color-red': '#CC3333',
+      '--color-orange': '#B54420',
+      '--color-purple': '#884060',
+      '--color-info': '#A03535',
+      // Chat message backgrounds — very dark, distinct
+      '--color-message-user': '#0A0003',
+      '--color-message-assistant': '#080500',
+      '--color-message-system': '#06000A',
+      '--color-scrollbar': '#1C0808',
+      '--color-scrollbar-hover': '#2D0C0C',
+      // Sidebar — near-black
+      '--color-sidebar': '#040101',
+      '--color-sidebar-foreground': '#D4B8B8',
+      '--color-sidebar-primary': '#A01515',
+      '--color-sidebar-primary-foreground': '#E8D0D0',
+      '--color-sidebar-accent': '#120404',
+      '--color-sidebar-accent-foreground': '#D4B8B8',
+      '--color-sidebar-border': '#1C0808',
+      '--color-sidebar-ring': '#A01515',
+      // Charts — muted palette
+      '--color-chart-1': '#A01515',
+      '--color-chart-2': '#B57030',
+      '--color-chart-3': '#884060',
+      '--color-chart-4': '#CC3333',
+      '--color-chart-5': '#B54420',
+    },
+  },
 };
 
 /** All available theme names as a typed array. */
@@ -744,6 +799,7 @@ const hljsThemes: Record<ThemeName, string> = {
   'ayu-dark': 'github-dark-dimmed',
   'rose-pine': 'github-dark-dimmed',
   'monochrome': 'github-dark-dimmed',
+  'titan-bob': 'github-dark-dimmed',
 };
 
 /** Apply a theme by setting CSS custom properties on the document root and loading the matching highlight.js stylesheet. */
@@ -752,6 +808,7 @@ export function applyTheme(themeName: ThemeName): void {
   if (!theme) return;
   
   const root = document.documentElement;
+  root.setAttribute('data-theme', themeName);
   Object.entries(theme.colors).forEach(([property, value]) => {
     // Set the --color-* property
     root.style.setProperty(property, value);

@@ -71,7 +71,7 @@ export function ConnectDialog({
               <div>
                 <div className="text-[0.667rem] font-medium uppercase tracking-[0.3em] text-primary/80">Gateway Handshake</div>
                 <DialogTitle className="mt-1 text-lg font-semibold tracking-[-0.03em] text-foreground sm:text-xl">
-                  Connect Nerve to your OpenClaw gateway
+                  Connect HQ to Titan Bob ⚡
                 </DialogTitle>
               </div>
             </div>

@@ -40,9 +40,11 @@ const THEME_LABELS: Record<ThemeName, string> = {
   'ayu-dark': 'Ayu Dark',
   'rose-pine': 'Rosé Pine',
   'monochrome': 'Monochrome',
+  'titan-bob': 'Titan Bob',
 };
 
 const FONT_LABELS: Record<FontName, string> = {
+  'felix-block': 'Felix Block Letters',
   'instrument-sans': 'Instrument Sans',
   'space-grotesk': 'Space Grotesk',
   'jetbrains-mono': 'JetBrains Mono',

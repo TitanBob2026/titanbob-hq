@@ -37,7 +37,7 @@ export async function invokeGatewayTool(
   const response = await fetch(`${GATEWAY_URL}/tools/invoke`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ tool, args, sessionKey: 'main' }),
+    body: JSON.stringify({ tool, args, sessionKey: 'agent:main:main' }),
     signal: AbortSignal.timeout(timeoutMs),
   });
 

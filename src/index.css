@@ -2,6 +2,18 @@
 @import "tw-animate-css";
 /* Note: highlight.js theme is applied dynamically via ThemeContext */
 
+/* Felix Block Letters — Bob's handwriting font */
+@font-face {
+  font-family: 'FelixBlockLetters';
+  src: url('/fonts/FelixBlockLetters.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrains Mono for terminal zones — loaded from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 @custom-variant dark (&:is(.dark *));
 
 /* Static (non-themeable) tokens */
@@ -235,6 +247,118 @@
 /* Send button active state */
 .send-btn:active:not(:disabled) {
   transform: scale(0.95);
+}
+
+/* Titan Bob theme overrides */
+[data-theme="titan-bob"] .send-btn {
+  background-color: #3D8B4A !important;
+  color: #E0F0E0 !important;
+}
+[data-theme="titan-bob"] .send-btn:hover:not(:disabled) {
+  background-color: #347A40 !important;
+}
+[data-theme="titan-bob"] .send-btn:disabled {
+  background-color: #2A5A30 !important;
+  opacity: 0.5;
+}
+/* Compact send button */
+[data-theme="titan-bob"] .send-btn {
+  min-height: 2rem !important;
+  padding: 0.25rem 0.6rem !important;
+  font-size: 0.7rem !important;
+  border-radius: 0.75rem !important;
+  gap: 0.25rem !important;
+}
+[data-theme="titan-bob"] .send-btn svg {
+  width: 12px !important;
+  height: 12px !important;
+}
+/* Compact scroll-to-bottom button */
+[data-theme="titan-bob"] button[title="Scroll to bottom"] {
+  width: 1.75rem !important;
+  height: 1.75rem !important;
+  min-width: unset !important;
+  min-height: unset !important;
+  font-size: 0.7rem !important;
+}
+
+/* Titan Bob font zones — global mono, Felix only in chat */
+/* Base: everything defaults to JetBrains Mono (terminal look) */
+[data-theme="titan-bob"] {
+  --font-sans: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace !important;
+  /* Centralized size knobs — tweak here, affects everywhere */
+  --mono-font-size: 0.82rem;
+  --chat-felix-font-size: 1.12rem;  /* ~37% bigger than mono to match x-height */
+}
+[data-theme="titan-bob"] body {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace !important;
+  font-size: var(--mono-font-size);
+}
+
+/* Header bar — original clean sans-serif */
+[data-theme="titan-bob"] header.topbar-mobile-compact,
+[data-theme="titan-bob"] header.topbar-mobile-compact * {
+  font-family: 'Instrument Sans', 'Helvetica Neue', Arial, sans-serif !important;
+}
+
+/* Chat messages & input — Felix Block Letters (Bob's handwriting) */
+/* font-family on * so all nested elements use Felix */
+[data-theme="titan-bob"] [role="log"],
+[data-theme="titan-bob"] [role="log"] *,
+[data-theme="titan-bob"] [aria-label="Message input"] {
+  font-family: 'FelixBlockLetters', 'Instrument Sans', sans-serif !important;
+  font-size-adjust: 0.45;
+  letter-spacing: 0.01em;
+}
+
+/* Override .msg-body and .markdown-content which set explicit font-sizes that stomp inheritance */
+[data-theme="titan-bob"] .msg .msg-body:not(.msg-body-intermediate),
+[data-theme="titan-bob"] .msg .msg-body:not(.msg-body-intermediate) .markdown-content {
+  font-size: var(--chat-felix-font-size);  /* 1.12rem — the actual fix */
+  line-height: 1.55;
+}
+/* Ensure markdown text elements inherit Felix size instead of setting their own */
+[data-theme="titan-bob"] .msg .msg-body:not(.msg-body-intermediate) .markdown-content :is(
+  p, li, blockquote, strong, em, a, h1, h2, h3, ul, ol
+) {
+  font-size: inherit;
+  line-height: inherit;
+}
+/* Message input */
+[data-theme="titan-bob"] [aria-label="Message input"] {
+  font-size: var(--chat-felix-font-size);
+  line-height: 1.5;
+}
+/* Bob's avatar + name badge slightly larger in user bubbles */
+[data-theme="titan-bob"] [role="log"] .msg-user .cockpit-badge[data-tone="primary"] {
+  font-size: 0.9rem !important;
+  gap: 0.4rem;
+}
+[data-theme="titan-bob"] [role="log"] .msg-user .cockpit-badge[data-tone="primary"] img {
+  height: 1.5rem !important;
+  width: 1.5rem !important;
+}
+/* Keep other bubble headers (time, collapse, copy buttons) compact */
+[data-theme="titan-bob"] [role="log"] button[aria-label*="Copy"],
+[data-theme="titan-bob"] [role="log"] button[aria-expanded] {
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+/* Keep code blocks monospace inside chat — reset size from Felix inheritance */
+[data-theme="titan-bob"] [role="log"] code,
+[data-theme="titan-bob"] [role="log"] pre,
+[data-theme="titan-bob"] [role="log"] pre *,
+[data-theme="titan-bob"] [role="log"] .hljs,
+[data-theme="titan-bob"] [role="log"] .hljs * {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace !important;
+  font-size: var(--mono-font-size) !important;  /* 0.82rem */
+  font-size-adjust: none !important;             /* reset — JetBrains doesn't need it */
+  letter-spacing: normal !important;
+  line-height: 1.5 !important;
+}
+/* Inline code in chat */
+[data-theme="titan-bob"] [role="log"] :not(pre) > code {
+  font-size: 0.84rem !important;
 }
 
 /* Search bar slide-down */

@@ -61,7 +61,12 @@ const bgClass = (role: string) => {
 
 function RoleBadge({ role, agentName = 'Agent' }: { role: string; agentName?: string }) {
   if (role === 'user') {
-    return <span className="cockpit-badge" data-tone="primary">Operator</span>;
+    return (
+      <span className="cockpit-badge inline-flex items-center gap-1.5" data-tone="primary">
+        <img src="/avatars/human-bob.png" alt="Bob" className="h-5 w-5 rounded-full object-cover" />
+        Bob
+      </span>
+    );
   }
   if (role === 'assistant') {
     return <span className="cockpit-badge" data-tone="success">{agentName}</span>;

@@ -2,22 +2,22 @@ import { useEffect, useRef } from 'react';
 
 const TAU = Math.PI * 2;
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
-function easeOut(t: number) { return 1 - Math.pow(1 - t, 3); }
 function ease(t: number) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3) / 2; }
 function clamp(v: number, lo = 0, hi = 1) { return Math.max(lo, Math.min(hi, v)); }
 function rgba(c: number[], a: number) { return `rgba(${c[0]},${c[1]},${c[2]},${Math.min(a, 1)})`; }
 
-const P = [255, 140, 50];
-const WH = [255, 220, 180];
-const DM = [48, 28, 14];
+// Chimney red palette
+const RED: number[] = [160, 21, 21];       // #A01515 muted crimson
+const BRIGHT: number[] = [204, 51, 51];    // #CC3333 highlight
+const DARK: number[] = [42, 8, 8];         // #2A0808 structural
 
-interface Trail { x: number; y: number; life: number; size: number; }
+interface Particle { x: number; y: number; vx: number; vy: number; life: number; size: number; }
 interface Ripple { x: number; y: number; life: number; maxR: number; }
 
 function glowDot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: number[], alpha: number, blur: number) {
   ctx.save();
   ctx.shadowBlur = blur;
-  ctx.shadowColor = rgba(color, alpha * 0.7);
+  ctx.shadowColor = rgba(color, alpha * 0.8);
   ctx.fillStyle = rgba(color, alpha);
   ctx.beginPath();
   ctx.arc(x, y, Math.max(r, 0.5), 0, TAU);
@@ -25,233 +25,268 @@ function glowDot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number,
   ctx.restore();
 }
 
-function dimDot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
-  ctx.fillStyle = rgba(DM, 0.5);
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.fill();
-}
-
-function dimLine(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, w: number) {
-  ctx.strokeStyle = rgba(DM, 0.4);
-  ctx.lineWidth = w;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-}
-
-function glowLine(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, w: number, color: number[], alpha: number, blur: number) {
-  ctx.save();
-  ctx.shadowBlur = blur;
-  ctx.shadowColor = rgba(color, alpha);
-  ctx.strokeStyle = rgba(color, alpha);
-  ctx.lineWidth = w;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-  ctx.restore();
-}
-
 /** Props for {@link NerveLogo}. */
 interface NerveLogoProps {
-  /** Logical size in CSS pixels (canvas is rendered at 2× for retina). @default 28 */
+  /** Logical size in CSS pixels. @default 28 */
   size?: number;
 }
 
 /**
- * Animated canvas logo for the Nerve brand.
+ * Titan Bob animated lightning bolt logo.
  *
- * Renders a hexagonal node graph with glowing fire-pulse animations:
- * center ignition → outward propagation → return fire → ring chain.
- * The animation loops on a ~4.2 s cycle and includes ambient breathing.
+ * Renders a glowing lightning bolt with chimney-red pulse animations:
+ * charge builds from base to tip → tip discharge → ripple → fade → repeat.
+ * ~4s cycle.
  */
 export default function NerveLogo({ size = 28 }: NerveLogoProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<{
-    trails: Trail[];
+    particles: Particle[];
     ripples: Ripple[];
-    center: { x: number; y: number; glow: number };
-    outer: { x: number; y: number; glow: number }[];
+    chargeProgress: number;
+    dischargeProgress: number;
+    phase: 'idle' | 'charging' | 'discharge' | 'fade';
+    phaseT: number;
     rafId: number;
   } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 2;
-    const PAD = 2.0; // 2x padding so glow never clips at canvas edge
+    const PAD = 2.0;
     const pxSize = size * dpr * PAD;
     canvas.width = pxSize;
     canvas.height = pxSize;
     canvas.style.width = `${size * PAD}px`;
     canvas.style.height = `${size * PAD}px`;
-    canvas.style.margin = `${-size * (PAD - 1) / 2}px`; // negative margin to keep layout tight
+    canvas.style.margin = `${-size * (PAD - 1) / 2}px`;
 
     const W = pxSize;
     const S = W / (size * PAD);
     const cx = W / 2;
     const cy = W / 2;
 
-    // Respect prefers-reduced-motion: render a single static frame
+    // Lightning bolt points (normalized 0-1, then scaled)
+    // Classic zigzag bolt: top-center → mid-right → mid-left → bottom-center
+    const boltScale = size * 0.38 * S;
+    const rawPts = [
+      [0.15, -0.95],   // top-left of bolt head
+      [0.50, -0.95],   // top-right of bolt head
+      [0.05, -0.05],   // mid-left bend
+      [0.42, -0.05],   // mid-right bend
+      [-0.15, 0.95],   // bottom tip
+      [-0.42, 0.95],   // bottom-left
+      [-0.05, 0.08],   // upper-left
+      [-0.38, 0.08],   // upper-right
+    ];
+    const pts = rawPts.map(([px, py]) => [cx + px * boltScale, cy + py * boltScale]);
+
+    // Spine of the bolt for particle travel (simplified 3-point path)
+    const spine = [
+      [cx + 0.32 * boltScale, cy - 0.90 * boltScale],   // top
+      [cx + 0.18 * boltScale, cy + 0.0 * boltScale],    // middle
+      [cx - 0.08 * boltScale, cy + 0.90 * boltScale],   // tip
+    ];
+
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const R = size * 0.31 * S;
-    const CYCLE = 4.2;
+    const CYCLE = 4.0;
 
-    const center = { x: cx, y: cy, glow: 0 };
-    const outer: { x: number; y: number; glow: number }[] = [];
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * TAU - Math.PI / 2;
-      outer.push({ x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, glow: 0 });
-    }
-
-    const trails: Trail[] = [];
+    const particles: Particle[] = [];
     const ripples: Ripple[] = [];
 
-    stateRef.current = { trails, ripples, center, outer, rafId: 0 };
+    stateRef.current = {
+      particles, ripples,
+      chargeProgress: 0,
+      dischargeProgress: 0,
+      phase: 'idle',
+      phaseT: 0,
+      rafId: 0,
+    };
 
-    const MAX_TRAILS = 200;
-    const MAX_RIPPLES = 20;
+    function drawBoltShape(alpha: number, glowAlpha: number, glowBlur: number) {
+      if (!ctx) return;
+      ctx.save();
+      ctx.shadowBlur = glowBlur;
+      ctx.shadowColor = rgba(RED, glowAlpha);
+      ctx.strokeStyle = rgba(RED, alpha * 0.6);
+      ctx.fillStyle = rgba(DARK, alpha * 0.85);
+      ctx.lineWidth = 1.2 * S;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function getSpinePoint(t: number): [number, number] {
+      // t in [0,1] along the spine
+      if (t <= 0.5) {
+        const u = t / 0.5;
+        return [lerp(spine[0][0], spine[1][0], u), lerp(spine[0][1], spine[1][1], u)];
+      } else {
+        const u = (t - 0.5) / 0.5;
+        return [lerp(spine[1][0], spine[2][0], u), lerp(spine[1][1], spine[2][1], u)];
+      }
+    }
 
     function animate(time: number) {
       if (!ctx) return;
       const t = (time / 1000) % CYCLE;
       ctx.clearRect(0, 0, W, W);
 
-      // Static structure
-      outer.forEach(n => dimLine(ctx, cx, cy, n.x, n.y, 1.5 * S));
-      for (let i = 0; i < 6; i++) dimLine(ctx, outer[i].x, outer[i].y, outer[(i+1)%6].x, outer[(i+1)%6].y, 1 * S);
-      dimDot(ctx, cx, cy, 7 * S);
-      outer.forEach(n => dimDot(ctx, n.x, n.y, 4.5 * S));
+      // Phase timing
+      // 0.0–0.1: idle
+      // 0.1–1.5: charging (progress 0→1)
+      // 1.5–2.0: hold charged
+      // 2.0–2.5: discharge
+      // 2.5–3.5: fade/ripple
+      // 3.5–4.0: idle
 
-      center.glow = Math.max(0, center.glow - 0.022);
-      outer.forEach(n => n.glow = Math.max(0, n.glow - 0.022));
+      const chargeStart = 0.1, chargeEnd = 1.5;
+      const dischargeStart = 2.0, dischargeEnd = 2.5;
+      const fadeEnd = 3.5;
 
-      // Phase 1: Center ignites
-      if (t < 0.35) {
-        const p = t / 0.35;
-        center.glow = Math.max(center.glow, p < 0.3 ? p / 0.3 : 1 - easeOut((p - 0.3) / 0.7));
-        if (t < 0.05 && ripples.length < 2) ripples.push({ x: cx, y: cy, life: 1, maxR: 35 * S });
-      }
+      const chargeP = clamp((t - chargeStart) / (chargeEnd - chargeStart));
+      const dischargeP = clamp((t - dischargeStart) / (dischargeEnd - dischargeStart));
+      const isCharged = t > chargeEnd && t < dischargeStart;
+      const isFading = t > dischargeEnd && t < fadeEnd;
 
-      // Phase 2: Outward fire
-      outer.forEach((node, i) => {
-        const start = 0.25 + i * 0.06;
-        const dur = 0.55;
-        const p = clamp((t - start) / dur);
-        if (p > 0 && p < 1) {
-          const ep = ease(p);
-          const x = lerp(cx, node.x, ep), y = lerp(cy, node.y, ep);
-          glowLine(ctx, cx, cy, x, y, 2.5 * S, P, 0.35 * (1 - p * 0.7), 12 * S);
-          glowDot(ctx, x, y, 3.5 * S * (1 - p * 0.2), P, 1, 20 * S);
-          glowDot(ctx, x, y, 1.75 * S, WH, 0.85, 5 * S);
-          if (Math.random() < 0.6) trails.push({ x: x + (Math.random()-0.5)*3*S, y: y + (Math.random()-0.5)*3*S, life: 0.8, size: 1.5*S });
+      // Draw static bolt structure
+      const ambientGlow = 0.08 + 0.04 * Math.sin(time / 1000 * 1.5);
+      drawBoltShape(0.7, ambientGlow, 6 * S);
+
+      // Charging effect: glow travels up spine from tip to top
+      if (t > chargeStart && t < dischargeStart) {
+        const reach = ease(chargeP); // how far up the spine the charge has reached
+        for (let seg = 0; seg < 20; seg++) {
+          const segT = (seg / 20) * reach;
+          const [sx, sy] = getSpinePoint(1 - segT); // 1 = tip, 0 = top
+          const brightness = (1 - segT / reach) * 0.6 * chargeP;
+          glowDot(ctx, sx, sy, 2.5 * S, RED, brightness, 12 * S);
         }
-        if (p >= 0.88) {
-          node.glow = Math.max(node.glow, easeOut((p - 0.88) / 0.12));
-          if (p > 0.95 && !ripples.some(r => Math.abs(r.x - node.x) < 1)) ripples.push({ x: node.x, y: node.y, life: 1, maxR: 14*S });
-        }
-      });
-
-      // Phase 3: Return fire
-      [1, 4].forEach((ni, idx) => {
-        const node = outer[ni];
-        const start = 1.5 + idx * 0.15;
-        const p = clamp((t - start) / 0.6);
-        if (p > 0 && p < 1) {
-          const ep = ease(p);
-          const x = lerp(node.x, cx, ep), y = lerp(node.y, cy, ep);
-          glowLine(ctx, node.x, node.y, x, y, 2*S, P, 0.3*(1-p*0.5), 10*S);
-          glowDot(ctx, x, y, 3*S, P, 0.9, 16*S);
-          glowDot(ctx, x, y, 1.5*S, WH, 0.7, 4*S);
-          if (Math.random() < 0.4) trails.push({ x, y, life: 0.6, size: 1.2*S });
-        }
-        if (p >= 0.9) center.glow = Math.max(center.glow, 0.6);
-      });
-
-      // Phase 4: Ring chain
-      for (let i = 0; i < 6; i++) {
-        const start = 2.5 + i * 0.12;
-        const p = clamp((t - start) / 0.28);
-        if (p > 0 && p < 1) {
-          const next = (i+1) % 6;
-          const ep = ease(p);
-          const x = lerp(outer[i].x, outer[next].x, ep), y = lerp(outer[i].y, outer[next].y, ep);
-          glowLine(ctx, outer[i].x, outer[i].y, x, y, 2*S, P, 0.5*(1-p*0.3), 8*S);
-          glowDot(ctx, x, y, 2.5*S, P, 0.8, 12*S);
-          if (Math.random() < 0.3) trails.push({ x, y, life: 0.5, size: 1*S });
-        }
-        if (t > (2.5+i*0.12+0.24) && t < (2.5+i*0.12+0.39)) {
-          outer[(i+1)%6].glow = Math.max(outer[(i+1)%6].glow, 0.65);
+        // Particle emission along charging front
+        if (Math.random() < 0.4 * chargeP) {
+          const frontT = 1 - reach;
+          const [fx, fy] = getSpinePoint(frontT);
+          particles.push({
+            x: fx + (Math.random() - 0.5) * 4 * S,
+            y: fy + (Math.random() - 0.5) * 4 * S,
+            vx: (Math.random() - 0.5) * 1.5 * S,
+            vy: (Math.random() - 0.5) * 1.5 * S,
+            life: 0.7 + Math.random() * 0.3,
+            size: 1.5 * S + Math.random() * S,
+          });
         }
       }
 
-      // Cap arrays to prevent unbounded growth on long-running tabs
-      if (trails.length > MAX_TRAILS) trails.splice(0, trails.length - MAX_TRAILS);
-      if (ripples.length > MAX_RIPPLES) ripples.splice(0, ripples.length - MAX_RIPPLES);
+      // Fully charged: bolt pulses bright
+      if (isCharged) {
+        const pulse = 0.6 + 0.4 * Math.sin(time / 1000 * 12);
+        drawBoltShape(0.0, pulse * 0.9, 18 * S);
+        glowDot(ctx, spine[2][0], spine[2][1], 5 * S, BRIGHT, pulse * 0.8, 20 * S);
+        if (Math.random() < 0.5) {
+          const st = Math.random();
+          const [sx, sy] = getSpinePoint(st);
+          particles.push({
+            x: sx, y: sy,
+            vx: (Math.random() - 0.5) * 2 * S, vy: (Math.random() - 0.5) * 2 * S,
+            life: 0.4, size: S + Math.random() * S,
+          });
+        }
+      }
+
+      // Discharge: bolt flares white-hot and shoots sparks from tip
+      if (t > dischargeStart && t < dischargeEnd) {
+        const dp = ease(dischargeP);
+        drawBoltShape(0, dp * 1.0, 30 * S * dp);
+        // Core white flash
+        ctx.save();
+        ctx.globalAlpha = dp * 0.7 * (1 - dp);
+        ctx.fillStyle = rgba(BRIGHT, 1);
+        ctx.shadowBlur = 25 * S;
+        ctx.shadowColor = rgba(BRIGHT, 0.9);
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // Shoot sparks from tip
+        if (Math.random() < 0.7) {
+          const tip = spine[2];
+          const angle = Math.random() * TAU;
+          const speed = (2 + Math.random() * 3) * S;
+          particles.push({
+            x: tip[0], y: tip[1],
+            vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+            life: 0.6 + Math.random() * 0.4, size: 1.2 * S + Math.random() * S,
+          });
+        }
+        // Ripple from tip on first discharge frame
+        if (dischargeP < 0.15 && ripples.length < 3) {
+          ripples.push({ x: spine[2][0], y: spine[2][1], life: 1, maxR: 18 * S });
+        }
+      }
+
+      // Fade out
+      if (isFading) {
+        const fp = (t - dischargeEnd) / (fadeEnd - dischargeEnd);
+        drawBoltShape(0, (1 - fp) * 0.4, (1 - fp) * 12 * S);
+      }
 
       // Ripples
       for (let i = ripples.length - 1; i >= 0; i--) {
         const r = ripples[i];
-        r.life -= 0.018;
+        r.life -= 0.02;
         if (r.life <= 0) { ripples.splice(i, 1); continue; }
         ctx.save();
-        ctx.strokeStyle = rgba(P, r.life * 0.25);
+        ctx.strokeStyle = rgba(RED, r.life * 0.3);
         ctx.lineWidth = Math.max(1, 1.5 * S * r.life);
-        ctx.shadowBlur = 8 * S;
-        ctx.shadowColor = rgba(P, r.life * 0.15);
+        ctx.shadowBlur = 6 * S;
+        ctx.shadowColor = rgba(RED, r.life * 0.2);
         ctx.beginPath();
-        ctx.arc(r.x, r.y, (1-r.life) * r.maxR, 0, TAU);
+        ctx.arc(r.x, r.y, (1 - r.life) * r.maxR, 0, TAU);
         ctx.stroke();
         ctx.restore();
       }
 
-      // Trails
-      for (let i = trails.length - 1; i >= 0; i--) {
-        const p = trails[i];
-        p.life -= 0.045;
-        if (p.life <= 0) { trails.splice(i, 1); continue; }
-        glowDot(ctx, p.x, p.y, p.size * p.life, P, p.life * 0.45, 5*S);
+      // Particles
+      const MAX_PARTICLES = 150;
+      if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.03 * S; // subtle gravity
+        p.life -= 0.04;
+        if (p.life <= 0) { particles.splice(i, 1); continue; }
+        glowDot(ctx, p.x, p.y, p.size * p.life, RED, p.life * 0.5, 4 * S);
       }
 
-      // Glowing nodes
-      if (center.glow > 0.01) {
-        glowDot(ctx, cx, cy, 7*S*(1+center.glow*0.25), P, center.glow*0.75, 28*S);
-        glowDot(ctx, cx, cy, 3.5*S, WH, center.glow*0.45, 8*S);
-      }
-      outer.forEach(n => {
-        if (n.glow > 0.01) {
-          glowDot(ctx, n.x, n.y, 4.5*S*(1+n.glow*0.25), P, n.glow*0.7, 18*S);
-          glowDot(ctx, n.x, n.y, 2.2*S, WH, n.glow*0.35, 5*S);
-        }
-      });
-
-      // Ambient breathe
-      const breathe = 0.03 + 0.02 * Math.sin(time / 1000 * 1.2);
-      glowDot(ctx, cx, cy, 4*S, P, breathe, 15*S);
+      // Ambient tip glow (always subtle)
+      glowDot(ctx, spine[2][0], spine[2][1], 2 * S, RED, ambientGlow * 0.6, 8 * S);
 
       if (stateRef.current) stateRef.current.rafId = requestAnimationFrame(animate);
     }
 
     if (prefersReducedMotion) {
-      // Render a single static frame — structure with gentle ambient glow, no animation
-      animate(0);
+      drawBoltShape(0.7, 0.15, 8 * S);
       return;
     }
 
     stateRef.current.rafId = requestAnimationFrame(animate);
-
     return () => {
       if (stateRef.current) cancelAnimationFrame(stateRef.current.rafId);
     };
   }, [size]);
 
-  return <canvas ref={canvasRef} role="img" aria-label="Nerve logo" style={{ display: 'block' }} />;
+  return <canvas ref={canvasRef} role="img" aria-label="Titan Bob logo" style={{ display: 'block' }} />;
 }

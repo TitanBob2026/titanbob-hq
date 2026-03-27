@@ -1,6 +1,6 @@
 // Font definitions for Nerve UI
 
-export type FontName = 'instrument-sans' | 'space-grotesk' | 'jetbrains-mono';
+export type FontName = 'instrument-sans' | 'space-grotesk' | 'jetbrains-mono' | 'felix-block';
 
 export interface Font {
   name: FontName;
@@ -10,6 +10,12 @@ export interface Font {
 }
 
 export const fonts: Record<FontName, Font> = {
+  'felix-block': {
+    name: 'felix-block',
+    label: 'Felix Block Letters',
+    family: "'FelixBlockLetters', 'Instrument Sans', 'Helvetica Neue', Arial, sans-serif",
+    // No googleFontsUrl — loaded via @font-face in index.css
+  },
   'instrument-sans': {
     name: 'instrument-sans',
     label: 'Instrument Sans',

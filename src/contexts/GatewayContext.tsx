@@ -97,17 +97,18 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       const hasThinking = rawThinking && rawThinking !== 'undefined' && rawThinking !== 'null';
 
       // Fallback to sessions.list for model and/or thinking (single RPC call for both)
-      if (clean === '--' || !hasThinking) {
+      // Always check sessions.list — status returns default_model, not session override
+      {
         try {
           const sr = await currentRpc('sessions.list', { activeMinutes: SESSIONS_ACTIVE_MINUTES, limit: SESSIONS_LIMIT }) as Record<string, unknown>;
           const list = (sr?.sessions as Array<{ sessionKey?: string; key?: string; model?: string; thinking?: string }>) || [];
           const primarySession = list.find(s => (s.sessionKey || s.key) === 'agent:main:main')
             || list.find(s => isTopLevelAgentSessionKey(s.sessionKey || s.key || ''));
-          if (clean === '--' && primarySession?.model) clean = normalizeModel(primarySession.model);
+          if (primarySession?.model) clean = normalizeModel(primarySession.model);
           if (!hasThinking && primarySession?.thinking) {
             setThinking(primarySession.thinking.toLowerCase());
           }
-        } catch { /* fallback to '--' */ }
+        } catch { /* fallback to status model */ }
       }
 
       setModel(clean);
